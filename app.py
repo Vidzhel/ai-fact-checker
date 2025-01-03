@@ -109,12 +109,13 @@ def retrieve_evidence(claim):
     results = []
     logging.debug(f"Retrieving evidence for claim: {claim}")
     # Wikipedia retrieval
-    # wiki_results = WikipediaLoader(query=claim, load_max_docs=3).load()
+    wiki_results = WikipediaLoader(query=claim, load_max_docs=3).load()
+    results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'], 'source': result.metadata['source']} for result in wiki_results])
 
     # Google Search retrieval
-    google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
-    logging.debug(f"Retrieved Google results: {google_results}")
-    results.extend([{'snippet': result["snippet"], 'source': result['link']} for result in google_results])
+    # google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
+    # logging.debug(f"Retrieved Google results: {google_results}")
+    # results.extend([{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in google_results])
 
     return results
 
@@ -169,6 +170,7 @@ def classify_evidence(claim, evidence):
     return sorted([{
         "source": claim_evidence['source'],
         "snippet": claim_evidence['snippet'],
+        "short_snippet": claim_evidence['short_snippet'],
         "classification": claim_classification.decision,
         "credibility": claim_classification.source_credibility,
         "evidence": claim_classification.key_evidence,
@@ -293,15 +295,20 @@ def verify_text(input_text):
         flagged = any(c["aggregate"]["flagged"] for c in claims_results)
         revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else (None, None)
         if (revised_paragraph is None) or (paragraph_diff is None):
-            continue
-
-        results.append({
-            "paragraph": paragraph,
-            "claims_results": claims_results,
-            "revised_paragraph": revised_paragraph.revised_paragraph,
-            "change_explanation": revised_paragraph.explanation,
-            "paragraph_diff": paragraph_diff
-        })
+            results.append({
+                "paragraph": paragraph,
+                "flagged": flagged,
+                "claims_results": claims_results,
+            })
+        else:
+            results.append({
+                "paragraph": paragraph,
+                "flagged": flagged,
+                "claims_results": claims_results,
+                "revised_paragraph": revised_paragraph.revised_paragraph,
+                "change_explanation": revised_paragraph.explanation,
+                "paragraph_diff": paragraph_diff
+            })
 
     logging.debug("Completed text verification")
     return results
@@ -335,13 +342,22 @@ def verify():
                     "classifications": claim_result['classifications']
                 })
 
-        paragraphs.append({
-            "paragraph": result['paragraph'],
-            "change_explanation": result['change_explanation'],
-            "paragraph_diff": result['paragraph_diff'],
-            "revised_paragraph": result['revised_paragraph'],
-            "highlights": highlights
-        })
+        if result['flagged']:
+            paragraphs.append({
+                "paragraph": result['paragraph'],
+                "flagged": result['flagged'],
+                "change_explanation": result['change_explanation'],
+                "paragraph_diff": result['paragraph_diff'],
+                "revised_paragraph": result['revised_paragraph'],
+                "highlights": highlights
+            })
+        else:
+            paragraphs.append({
+                "paragraph": result['paragraph'],
+                "flagged": result['flagged'],
+                "highlights": highlights
+            })
+
 
     logging.debug("Returning verification results")
     return jsonify({

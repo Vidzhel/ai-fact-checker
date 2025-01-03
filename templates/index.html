@@ -31,6 +31,9 @@
             border-radius: 5px;
             font-size: 14px;
             z-index: 10;
+            overflow: auto;
+            max-height: 300px;
+            width: 500px;
         }
 
         .highlight:hover .tooltip {
@@ -40,6 +43,7 @@
         ins {
             background: rgb(130, 181, 130) !important;
         }
+
         del {
             background: rgb(189, 123, 123) !important;
         }
@@ -77,6 +81,11 @@
 
         data.paragraphs.forEach(paragraph => {
             let paragraphText = paragraph.paragraph;
+            if (!paragraph.flagged) {
+                output += `<p>${paragraphText}</p>`;
+                return;
+            }
+
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
                 let tooltipContent = `
@@ -86,7 +95,7 @@
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
                     <strong>Cridability:</strong> ${c.credibility} - ${c.credibility_justification}<br>
-                    <strong>Snippet:</strong> ${c.snippet}<br>
+                    <strong>Snippet:</strong> ${c.short_snippet}<br>
                     <strong>Evidence:</strong> ${c.evidence}<br>
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
