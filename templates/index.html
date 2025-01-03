@@ -16,7 +16,13 @@
             margin-bottom: 10px;
         }
 
-        .highlight {
+        .highlight-approved {
+            background-color: #00ff0d;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .highlight-change {
             background-color: yellow;
             position: relative;
             cursor: pointer;
@@ -36,7 +42,7 @@
             width: 500px;
         }
 
-        .highlight:hover .tooltip {
+        .highlight-change:hover .tooltip, .highlight-approved:hover .tooltip{
             display: block;
         }
 
@@ -81,17 +87,13 @@
 
         data.paragraphs.forEach(paragraph => {
             let paragraphText = paragraph.paragraph;
-            if (!paragraph.flagged) {
-                output += `<p>${paragraphText}</p>`;
-                return;
-            }
 
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
-                let tooltipContent = `
+                let tooltipContent = paragraph.flagged ? `
                     <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
                     <strong>Explanation:</strong> ${paragraph.change_explanation}<br><br>
-                `
+                ` : '';
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
                     <strong>Cridability:</strong> ${c.credibility} - ${c.credibility_justification}<br>
@@ -101,7 +103,7 @@
                 `).join('<br><br>');
 
                 const highlightedHTML = `
-                    <span class="highlight">
+                    <span class="${paragraph.flagged ? 'highlight-change' : 'highlight-approved'}">
                         ${claim}
                         <span class="tooltip">${tooltipContent}</span>
                     </span>

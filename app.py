@@ -50,13 +50,18 @@ class DecisionClaimEnum(str, Enum):
     neutral = 'Neutral'
 
 
-class Queries(BaseModel):
+class ClaimQuery(BaseModel):
     google: str
     wiki: str
     vector_store: str
 
 
+class ClaimQueries(BaseModel):
+    list: list[ClaimQuery]
+
+
 class ClassifiedClaim(BaseModel):
+    relevant: bool
     decision: DecisionClaimEnum
     source_credibility: float
     key_evidence: str
@@ -115,21 +120,18 @@ def extract_claims(paragraph):
     return claims.list
 
 
-def retrieve_evidence(claim):
-    """Retrieve evidence for a claim from multiple sources."""
-    results = []
-    logging.info(f"Retrieving evidence for claim: {claim}")
-    query_wiki, query_google, query_vector_store = claim
-
+def retrieve_claim_queries(claims: list[Claim]):
+    stringified_claims = "\n".join([f"{claim.claim_text}" for claim in claims])
     prompt = (
-        f"Your task is to generate three distinct search queries based on the given claim. These queries should be optimized for:"
+        f"Your task is to generate three distinct search queries to search for evidence for EACH of the given claims. "
+        f"These queries should be optimized for:"
         f"1. Wikipedia (using a Python package like `wikipedia-api` or similar)."
         f"2. Google Search."
         f"3. A vector store for semantic search.\n\n"
         f"Guidelines:"
         f"1. **Wikipedia Query**: Create a concise query using the most relevant keywords from the claim, structured to match typical Wikipedia titles or content."
         f"2. **Google Query**: Formulate a detailed and natural-language query designed to retrieve the most relevant search results from a general search engine."
-        f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.")
+        f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.\n\nCLAIMS: {stringified_claims}")
     response = client.beta.chat.completions.parse(
         messages=[
             {
@@ -142,31 +144,40 @@ def retrieve_evidence(claim):
             }
         ],
         model=model,
-        response_format=Queries
+        response_format=ClaimQueries
     )
     queries = response.choices[0].message.parsed
-    if queries:
-        query_wiki = queries.wiki
-        query_google = queries.google
-        query_vector_store = queries
+    if not queries:
+        return ClaimQueries(list=[ClaimQuery(google=claim, vector_store=claim, wiki=claim) for claim in claims])
+
+    return queries
+
+
+def retrieve_evidence(claimQuery: ClaimQuery):
+    """Retrieve evidence for a claim from multiple sources."""
+    results = []
+    logging.info(f"Retrieving evidence for claim: {claimQuery}")
 
     try:
-        docs = vector_store.similarity_search(query_vector_store, k=3)
+        docs = vector_store.similarity_search(claimQuery.vector_store, k=3)
         results.extend(
-            [{'snippet': result.page_content, 'source': result.metadata['source'], 'credibility': 1} for result in
+            [{'snippet': result.page_content, 'short_snippet': result.page_content,
+              'credibility_justification': 'User provided document', 'credibility': 1,
+              'source': f"{result.metadata['source']} - page: {result.metadata['page']}"} for result
+             in
              docs])
     except Exception as e:
-        logging.error(f"Error retrieving wiki results: {e}")
+        logging.error(f"Error retrieving vector_store results: {e}")
 
     try:
-        wiki_results = WikipediaLoader(query=query_wiki, load_max_docs=3).load()
+        wiki_results = WikipediaLoader(query=claimQuery.wiki, load_max_docs=3).load()
         results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'],
                          'source': result.metadata['source']} for result in wiki_results])
     except Exception as e:
         logging.error(f"Error retrieving wiki results: {e}")
 
     try:
-        google_results = GoogleSearchAPIWrapper(k=3).results(query=query_google, num_results=5)
+        google_results = GoogleSearchAPIWrapper(k=3).results(query=claimQuery.google, num_results=5)
         logging.info(f"Retrieved Google results: {google_results}")
         results.extend(
             [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in
@@ -209,8 +220,10 @@ def classify_evidence(claim, evidence):
                             f"3. Extract key phrases from the evidence that support the decision."
                             f"4. Provide a brief justification for the credibility score.\n"
                             f"Additional Step:"
-                            f"- Relevance: Assess whether the evidence is contextually relevant to the claim before "
-                            f"determining the relationship. If irrelevant, the decision should default to '{DecisionClaimEnum.neutral}'.\n\n"
+                            f"- Relevance: Assess whether the evidence is contextually relevant to the claim before"
+                            f"determining the relationship. "
+                            f"- If evidence is irrelevant, set 'relevant' field to false and the decision should "
+                            f"default to '{DecisionClaimEnum.neutral}'.\n\n"
                             f"CLAIMS:\n{prompt}")
             }
         ],
@@ -231,9 +244,10 @@ def classify_evidence(claim, evidence):
         "classification": claim_classification.decision,
         "credibility": claim_evidence.get('credibility', claim_classification.source_credibility),
         "evidence": claim_classification.key_evidence,
-        "credibility_justification": claim_classification.credibility_justification
+        "credibility_justification": claim_evidence.get('credibility_justification',
+                                                        claim_classification.credibility_justification),
     } for (claim_evidence, claim_classification) in zip(evidence, claims.list)
-        if claim_classification.source_credibility > 0.5],
+        if claim_classification.source_credibility > 0.5 and claim_classification.relevant],
         key=lambda x: x["credibility"],
         reverse=True)
 
@@ -332,11 +346,12 @@ def verify_text(input_text):
 
     for i, paragraph in enumerate(paragraphs):
         claims = extract_claims(paragraph)
+        claim_queries = retrieve_claim_queries(claims)
         claims_results = []
-        for claim_obj in claims:
+        for (claim_obj, claim_query) in zip(claims, claim_queries.list):
             claim = claim_obj.claim_text
             original_text = claim_obj.original_text
-            evidence = retrieve_evidence(claim)
+            evidence = retrieve_evidence(claim_query)
             classified_evidence = classify_evidence(claim, evidence)
             claim_aggregate = aggregate_results(classified_evidence)
             claims_results.append({
