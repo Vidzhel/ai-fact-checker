@@ -9,16 +9,19 @@
             font-family: Arial, sans-serif;
             margin: 20px;
         }
+
         textarea {
             width: 100%;
             height: 150px;
             margin-bottom: 10px;
         }
+
         .highlight {
             background-color: yellow;
             position: relative;
             cursor: pointer;
         }
+
         .tooltip {
             display: none;
             position: absolute;
@@ -29,6 +32,7 @@
             font-size: 14px;
             z-index: 10;
         }
+
         .highlight:hover .tooltip {
             display: block;
         }
@@ -44,12 +48,12 @@
 <script>
     document.getElementById('verifyButton').addEventListener('click', async () => {
         const inputText = document.getElementById('inputText').value;
-        const response = await fetch('http://localhost:9000/verify', {
+        const response = await fetch('/verify', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ text: inputText })
+            body: JSON.stringify({text: inputText})
         });
 
         const data = await response.json();
@@ -62,27 +66,34 @@
         const outputTextDiv = document.getElementById('outputText');
         outputTextDiv.innerHTML = '';
 
-        let highlightedText = data.text;
+        let output = '';
 
-        data.highlights.forEach(highlight => {
-            const claim = highlight.claim;
-            const tooltipContent = highlight.classifications.map(c => `
+        data.paragraphs.forEach(paragraph => {
+            const paragraphText = paragraph.paragraph;
+            paragraph.highlights.forEach(highlight => {
+                const claim = highlight.original_text;
+                let tooltipContent = `
+                    <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
+                `
+                tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
                     <strong>Snippet:</strong> ${c.snippet}<br>
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
 
-            const highlightedHTML = `
+                const highlightedHTML = `
                     <span class="highlight">
                         ${claim}
                         <span class="tooltip">${tooltipContent}</span>
                     </span>
                 `;
+                paragraphText = paragraphText.replace(claim, highlightedHTML);
+            });
 
-            highlightedText = highlightedText.replace(claim, highlightedHTML);
+            output += `<p>${paragraphText}</p>`;
         });
 
-        outputTextDiv.innerHTML = highlightedText;
+        outputTextDiv.innerHTML = output;
     });
 </script>
 </body>
