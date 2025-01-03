@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text Verification Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            margin-bottom: 10px;
+        }
+        .highlight {
+            background-color: yellow;
+            position: relative;
+            cursor: pointer;
+        }
+        .tooltip {
+            display: none;
+            position: absolute;
+            background-color: #333;
+            color: #fff;
+            padding: 5px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        .highlight:hover .tooltip {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<h1>Text Verification Tool</h1>
+<textarea id="inputText" placeholder="Enter your text here..."></textarea>
+<button id="verifyButton">Verify</button>
+<h2>Processed Text</h2>
+<div id="outputText"></div>
+
+<script>
+    document.getElementById('verifyButton').addEventListener('click', async () => {
+        const inputText = document.getElementById('inputText').value;
+        const response = await fetch('http://localhost:9000/verify', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ text: inputText })
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            alert(data.error);
+            return;
+        }
+
+        const outputTextDiv = document.getElementById('outputText');
+        outputTextDiv.innerHTML = '';
+
+        let highlightedText = data.text;
+
+        data.highlights.forEach(highlight => {
+            const claim = highlight.claim;
+            const tooltipContent = highlight.classifications.map(c => `
+                    <strong>Source:</strong> ${c.source}<br>
+                    <strong>Snippet:</strong> ${c.snippet}<br>
+                    <strong>Classification:</strong> ${c.classification}
+                `).join('<br><br>');
+
+            const highlightedHTML = `
+                    <span class="highlight">
+                        ${claim}
+                        <span class="tooltip">${tooltipContent}</span>
+                    </span>
+                `;
+
+            highlightedText = highlightedText.replace(claim, highlightedHTML);
+        });
+
+        outputTextDiv.innerHTML = highlightedText;
+    });
+</script>
+</body>
+</html>
