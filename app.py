@@ -88,20 +88,33 @@ def chunk_text(input_text):
     return input_text.split("\n\n")  # Simple split by double newline for paragraphs
 
 
-async def extract_claims(paragraph):
-    """Extracts factual claims from a paragraph using LLM."""
-    logging.info(f"Extracting claims from paragraph: {paragraph}")
+async def extract_claims_from_paragraph(claims: list[Claim], paragraph):
+    formatted_claims = "\n".join([f"- {claim.claim_text}" for claim in claims])
+    additional_claims = await extract_claims(
+        paragraph,
+        additional_prompt=f"\n\n Additional guidelines: "
+                          f"1. Analyse the already extracted claims and generate more if you see any factual information is missing"
+                          f"Do not repeat claims, but create new"
+                          f"ALREADY EXTRACTED CLAIMS: {formatted_claims}")
+    return claims + additional_claims
+
+
+async def extract_claims(text, additional_prompt=""):
+    """Extracts factual claims from a part of text"""
+    logging.info(f"Extracting claims from text: {text}")
     prompt = (
         f"Extract all factual claims from the given text. A factual claim is any statement that asserts something "
-        f"as a fact and can be verified\n"
+        f"as a fact and can be verified{additional_prompt}\n"
         f"Guidelines:"
         f"1. The 'claim_text' should distill the factual assertion while preserving its meaning. Remove unrelated phrases or context."
         f"2. The 'original_text' must exactly match the corresponding part of the input text from which the claim was derived."
-        f"3. Do not include opinions, speculative statements, or rhetorical questions as claims."
-        f"4. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
-        f"5. If there is no claims, output empty list"
-        f"6. Analyse every sentence separately and paragraph as a whole"
-        f"7. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${paragraph}'''")
+        f"3. Each claim must contain only 1 factual information and enough context to be unambiguous and easy to search"
+        f"4. The claim must question single fact, not multiple facts, so that it's easy to search"
+        f"5. The claim must not be vague, we will be able to find specific information, specific dates, etc."
+        f"6. Select a particular part of the original text when referencing it, not the entire sentence"
+        f"7. Do not include opinions, speculative statements, or rhetorical questions as claims."
+        f"8. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
+        f"9. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${text}'''")
     response = await client.beta.chat.completions.parse(
         messages=[
             {
@@ -204,9 +217,30 @@ async def classify_evidence(claim, evidence):
     """Classify evidence snippets as Supporting, Contradicting, or Neutral."""
     logging.info(f"Classifying evidence for claim: {claim}")
     prompt = f"Claim: '''{claim}'''"
-    for item in evidence:
-        prompt += f"\n\nEvidence: '''{item['snippet']}'''\nSource: '''{item['source']}'''"
+    analysed_evidence = await asyncio.gather(
+        *[analyse_evidence(prompt, evidence_item) for evidence_item in evidence]
+    )
 
+    logging.info(f"Classified evidence: {analysed_evidence}")
+    return sorted([{
+        "source": claim_evidence['source'],
+        "snippet": claim_evidence['snippet'],
+        "short_snippet": claim_evidence['short_snippet'],
+        "classification": evidence_classification.decision,
+        "credibility": claim_evidence.get('credibility', evidence_classification.source_credibility),
+        "evidence": evidence_classification.key_evidence,
+        "credibility_justification": claim_evidence.get('credibility_justification',
+                                                        evidence_classification.credibility_justification),
+    } for (claim_evidence, evidence_classification) in zip(evidence, analysed_evidence)
+        if evidence_classification is not None
+           and evidence_classification.source_credibility > 0.5
+           and evidence_classification.relevant],
+        key=lambda x: x["credibility"],
+        reverse=True)
+
+
+async def analyse_evidence(claim_prompt, evidence_item):
+    prompt = claim_prompt + f"\n\nEvidence: '''{evidence_item['snippet']}'''\nSource: '''{evidence_item['source']}'''"
     response = await client.beta.chat.completions.parse(
         messages=[
             {
@@ -236,32 +270,19 @@ async def classify_evidence(claim, evidence):
                             f"determining the relationship. "
                             f"- If evidence is irrelevant, set 'relevant' field to false and the decision should "
                             f"default to '{DecisionClaimEnum.neutral}'.\n\n"
-                            f"CLAIMS:\n{prompt}")
+                            f"CLAIM WITH EVIDENCE:\n{prompt}")
             }
         ],
         model=advanced_model,
-        response_format=ClassifiedClaims
+        response_format=ClassifiedClaim
     )
 
-    claims = response.choices[0].message.parsed
-    if not claims:
+    classified_evidence = response.choices[0].message.parsed
+    if not classified_evidence:
         logging.info("No claims extracted")
-        return []
+        return None
 
-    logging.info(f"Classified evidence: {claims}")
-    return sorted([{
-        "source": claim_evidence['source'],
-        "snippet": claim_evidence['snippet'],
-        "short_snippet": claim_evidence['short_snippet'],
-        "classification": claim_classification.decision,
-        "credibility": claim_evidence.get('credibility', claim_classification.source_credibility),
-        "evidence": claim_classification.key_evidence,
-        "credibility_justification": claim_evidence.get('credibility_justification',
-                                                        claim_classification.credibility_justification),
-    } for (claim_evidence, claim_classification) in zip(evidence, claims.list)
-        if claim_classification.source_credibility > 0.5 and claim_classification.relevant],
-        key=lambda x: x["credibility"],
-        reverse=True)
+    return classified_evidence
 
 
 def aggregate_results(classifications):
@@ -388,15 +409,19 @@ async def verify_text(input_text):
     return results
 
 
-async def process_paragraph(paragraph):
-    claims = await extract_claims(paragraph)
+async def process_paragraph(paragraph: str):
+    sentence_claims = await asyncio.gather(
+        *[extract_claims(sentence) for sentence in paragraph.split(".")]
+    )
+    sentence_claims = [claim for claims in sentence_claims for claim in claims]
+    claims = await extract_claims_from_paragraph(sentence_claims, paragraph)
     claim_queries = await retrieve_claim_queries(claims)
     claims_results = await asyncio.gather(
         *[process_claim(claim_obj, claim_query) for claim_obj, claim_query in zip(claims, claim_queries.list)]
     )
 
     flagged = any(c["aggregate"]["flagged"] for c in claims_results)
-    revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else (None, None)
+    revised_paragraph, paragraph_diff = await generate_revision(paragraph, claims_results) if flagged else (None, None)
     if (revised_paragraph is None) or (paragraph_diff is None):
         return {
             "paragraph": paragraph,

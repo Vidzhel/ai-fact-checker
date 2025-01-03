@@ -108,7 +108,7 @@
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
 
-                const bgColor = certainty < 0.5 ? 'lightcoral' : `rgb(${Math.round(255 - 255 * (certainty - 0.5) * 2)}, ${Math.round(255 * (certainty - 0.5) * 2)}, 0)`;
+                const bgColor = certainty < 0.5 ? 'yellow' : `rgb(${Math.round(255 - 255 * (certainty - 0.5) * 2)}, ${Math.round(165 + 90 * (certainty - 0.5) * 2)}, 0)`;
                 const highlightedHTML = `
                     <span class="${paragraph.flagged ? 'highlight-change' : 'highlight-approved'}"
                     style="background-color: ${bgColor}">
