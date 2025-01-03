@@ -123,7 +123,9 @@ def extract_claims(paragraph):
 
 
 def retrieve_claim_queries(claims: list[Claim]):
-    default_queries = ClaimQueries(list=[ClaimQuery(google=claim, vector_store=claim, wiki=claim) for claim in claims])
+    default_queries = ClaimQueries(
+        list=[ClaimQuery(google=claim.claim_text, vector_store=claim.claim_text, wiki=claim.claim_text)
+              for claim in claims])
     if not ENABLE_QUERY_OPTIMIZATION:
         return default_queries
 
@@ -265,12 +267,18 @@ def aggregate_results(classifications):
     supporting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
     contradicting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
     neutral = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.neutral)
+
+    supporting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
+    contradicting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
+    certainty = 0
+    if contradicting_credibility + contradicting_credibility != 0:
+        certainty = supporting_credibility / (contradicting_credibility + contradicting_credibility)
     aggregate = {
         "supporting": supporting,
         "contradicting": contradicting,
         "neutral": neutral,
         "flagged": contradicting > supporting,
-        "certainty": supporting / (supporting + contradicting) if len(classifications) != 0 else 0
+        "certainty": certainty
     }
     logging.info(f"Aggregated results: {aggregate}")
     return aggregate

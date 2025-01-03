@@ -17,13 +17,13 @@
         }
 
         .highlight-approved {
-            background-color: #00ff0d;
             position: relative;
             cursor: pointer;
         }
 
         .highlight-change {
-            background-color: yellow;
+            text-decoration: underline;
+            text-decoration-color: black;
             position: relative;
             cursor: pointer;
         }
@@ -106,8 +106,10 @@
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
 
+                bgColor = certainty < 0.5 ? 'lightcoral' : `rgb(${Math.round(255 - 255 * (certainty - 0.5) * 2)}, ${Math.round(255 * (certainty - 0.5) * 2)}, 0)`;
                 const highlightedHTML = `
-                    <span class="${paragraph.flagged ? 'highlight-change' : 'highlight-approved'}">
+                    <span class="${paragraph.flagged ? 'highlight-change' : 'highlight-approved'}"
+                    style="background-color: ${bgColor}">
                         ${claim}
                         <span class="tooltip">${tooltipContent}</span>
                     </span>
