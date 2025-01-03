@@ -15,6 +15,7 @@ from langchain_community.document_loaders import PyPDFLoader
 EMBEDDINGS_FOLDER = './embeddings'
 VECTOR_STORE_PATH = os.path.join(EMBEDDINGS_FOLDER, 'vector_store.json')
 ENABLE_QUERY_OPTIMIZATION = os.environ.get('ENABLE_QUERY_OPTIMIZATION') == 'true'
+ENABLE_GOOGLE_SEARCH = os.environ.get('ENABLE_GOOGLE_SEARCH') == 'true'
 
 load_dotenv()
 
@@ -181,14 +182,15 @@ def retrieve_evidence(claimQuery: ClaimQuery):
     except Exception as e:
         logging.error(f"Error retrieving wiki results: {e}")
 
-    try:
-        google_results = GoogleSearchAPIWrapper(k=3).results(query=claimQuery.google, num_results=5)
-        logging.info(f"Retrieved Google results: {google_results}")
-        results.extend(
-            [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in
-             google_results])
-    except Exception as e:
-        logging.error(f"Error retrieving google results: {e}")
+    if ENABLE_GOOGLE_SEARCH:
+        try:
+            google_results = GoogleSearchAPIWrapper(k=3).results(query=claimQuery.google, num_results=5)
+            logging.info(f"Retrieved Google results: {google_results}")
+            results.extend(
+                [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']}
+                 for result in google_results])
+        except Exception as e:
+            logging.error(f"Error retrieving google results: {e}")
 
     return results
 
@@ -268,7 +270,7 @@ def aggregate_results(classifications):
         "contradicting": contradicting,
         "neutral": neutral,
         "flagged": contradicting > supporting,
-        "certainty":  supporting / (supporting + contradicting) if len(classifications) != 0 else 0
+        "certainty": supporting / (supporting + contradicting) if len(classifications) != 0 else 0
     }
     logging.info(f"Aggregated results: {aggregate}")
     return aggregate
