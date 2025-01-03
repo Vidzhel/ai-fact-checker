@@ -36,6 +36,13 @@
         .highlight:hover .tooltip {
             display: block;
         }
+
+        ins {
+            background: rgb(130, 181, 130) !important;
+        }
+        del {
+            background: rgb(189, 123, 123) !important;
+        }
     </style>
 </head>
 <body>
@@ -69,7 +76,7 @@
         let output = '';
 
         data.paragraphs.forEach(paragraph => {
-            const paragraphText = paragraph.paragraph;
+            let paragraphText = paragraph.paragraph;
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
                 let tooltipContent = `
@@ -77,7 +84,9 @@
                 `
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
+                    <strong>Cridability:</strong> ${c.credibility} - ${c.credibility_justification}<br>
                     <strong>Snippet:</strong> ${c.snippet}<br>
+                    <strong>Evidence:</strong> ${c.evidence}<br>
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
 
