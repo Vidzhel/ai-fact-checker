@@ -26,7 +26,7 @@ client = openai.AsyncOpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
 model = "gpt-4o-mini"
-advanced_model = "gpt-4o"
+advanced_model = "gpt-4o-mini"
 system_prompt = (f"You are a highly objective scientist and researcher with expertise in evaluating claims "
                  f"against evidence. Your goal is to assess relationships between claims and provided evidence, "
                  f"relying only on factual information and verifiable sources"
@@ -100,7 +100,8 @@ async def extract_claims(paragraph):
         f"3. Do not include opinions, speculative statements, or rhetorical questions as claims."
         f"4. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
         f"5. If there is no claims, output empty list"
-        f"6. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${paragraph}'''")
+        f"6. Analyse every sentence separately and paragraph as a whole"
+        f"7. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${paragraph}'''")
     response = await client.beta.chat.completions.parse(
         messages=[
             {
@@ -283,8 +284,10 @@ def aggregate_results(classifications):
     # Calculate how certain it's incorrect. We have both supporting and contradicting evidence,
     # so in case contradicting certainty is high, we flag the text for update
     if supporting_credibility != 0 and contradicting_credibility != 0:
-        certainty = contradicting_credibility / (supporting_credibility + contradicting_credibility)
-        flagged = certainty >= 0.6
+        incorrect_certainty = contradicting_credibility / (supporting_credibility + contradicting_credibility)
+        correct_certainty = 1 - incorrect_certainty
+        flagged = incorrect_certainty >= 0.6
+        certainty = incorrect_certainty if flagged else correct_certainty
 
     # Certain incorrect - we have only contradicting evidence, so we do change if we are confident enough
     # Maybe it's more logical
