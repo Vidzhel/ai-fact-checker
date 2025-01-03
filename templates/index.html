@@ -81,6 +81,7 @@
                 const claim = highlight.original_text;
                 let tooltipContent = `
                     <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
+                    <strong>Explanation:</strong> ${paragraph.change_explanation}<br><br>
                 `
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>

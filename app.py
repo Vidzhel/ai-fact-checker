@@ -6,7 +6,8 @@ import os
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
 import logging
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel
+from enum import Enum
 from diff_match_patch import diff_match_patch
 from typing_extensions import Annotated
 
@@ -28,10 +29,6 @@ system_prompt = (f"You are a highly objective scientist and researcher with expe
 
 app = Flask(__name__)
 
-supporting_claim_decision = 'Supporting'
-contradicting_claim_decision = 'Contradicting'
-neutral_claim_decision = 'Neutral'
-
 
 class Claim(BaseModel):
     original_text: str
@@ -42,16 +39,26 @@ class Claims(BaseModel):
     list: list[Claim]
 
 
+class DecisionClaimEnum(str, Enum):
+    supporting = 'Supporting'
+    contradicting = 'Contradicting'
+    neutral = 'Neutral'
+
+
 class ClassifiedClaim(BaseModel):
-    decision: str = StringConstraints(strip_whitespace=True, to_upper=True,
-                                      pattern=rf'^({contradicting_claim_decision}|{supporting_claim_decision}|{neutral_claim_decision})$')
-    source_credibility: float = Field(strict=True, ge=0, le=1)
+    decision: DecisionClaimEnum
+    source_credibility: float
     key_evidence: str
     credibility_justification: str
 
 
 class ClassifiedClaims(BaseModel):
     list: list[ClassifiedClaim]
+
+
+class RevisedParagraph(BaseModel):
+    revised_paragraph: str
+    explanation: str
 
 
 # Functions for core steps
@@ -64,7 +71,16 @@ def chunk_text(input_text):
 def extract_claims(paragraph):
     """Extracts factual claims from a paragraph using LLM."""
     logging.debug(f"Extracting claims from paragraph: {paragraph}")
-    prompt = f"Extract factual claims from the following text:\n\n{paragraph}\n\nOutput each claim as a JSON object with 'claim_text' and 'original_text' fields. The 'original_text' should match exactly the part of the input it was derived from."
+    prompt = (
+        f"Extract all factual claims from the given text. A factual claim is any statement that asserts something "
+        f"as a fact and can be verified\n"
+        f"Guidelines:"
+        f"1. The 'claim_text' should distill the factual assertion while preserving its meaning. Remove unrelated phrases or context."
+        f"2. The 'original_text' must exactly match the corresponding part of the input text from which the claim was derived."
+        f"3. Do not include opinions, speculative statements, or rhetorical questions as claims."
+        f"4. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
+        f"5. If there is no claims, output empty list"
+        f"6. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${paragraph}'''")
     response = client.beta.chat.completions.parse(
         messages=[
             {
@@ -77,7 +93,6 @@ def extract_claims(paragraph):
             }
         ],
         model=model,
-        max_tokens=500,
         response_format=Claims
     )
     claims = response.choices[0].message.parsed
@@ -99,7 +114,7 @@ def retrieve_evidence(claim):
     # Google Search retrieval
     google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
     logging.debug(f"Retrieved Google results: {google_results}")
-    results.extend([{'snippet': result["snippet"], 'source': result['']} for result in google_results])
+    results.extend([{'snippet': result["snippet"], 'source': result['link']} for result in google_results])
 
     return results
 
@@ -109,7 +124,7 @@ def classify_evidence(claim, evidence):
     logging.debug(f"Classifying evidence for claim: {claim}")
     prompt = f"Claim: '''{claim}'''"
     for item in evidence:
-        prompt += f"\n\nEvidence: '''{item.snippet}'''\nSource: '''{item.source}'''"
+        prompt += f"\n\nEvidence: '''{item['snippet']}'''\nSource: '''{item['source']}'''"
 
     response = client.beta.chat.completions.parse(
         messages=[
@@ -119,30 +134,29 @@ def classify_evidence(claim, evidence):
             },
             {
                 "role": "user",
-                "content": f"Evaluate the relationship between the given claim and the provided evidence. "
-                           f"For each claim, determine whether the evidence supports, contradicts, or is neutral to the claim.\n"
-                           f"Criteria for Decision:"
-                           f"- {supporting_claim_decision}: Evidence explicitly affirms the claim with no ambiguity."
-                           f"- {contradicting_claim_decision}: Evidence explicitly denies or disputes the claim with no ambiguity."
-                           f"- {neutral_claim_decision}: Evidence is unrelated, ambiguous, or insufficient to affirm or deny the claim.\n"
-                           f"Additionally, assess the credibility of the source using the following scale:"
-                           f"- 1.0: Peer-reviewed resources (e.g., white papers, academic journals)"
-                           f"- 0.8: Crowd-sourced resources with robust moderation (e.g., Wikipedia)"
-                           f"- 0.6: Reputable news outlets and well-known publications"
-                           f"- Below 0.6: Sources with questionable credibility or lack of verification\n"
-                           f"The result should include:"
-                           f"1. Decision: '{supporting_claim_decision}', '{contradicting_claim_decision}', or '{neutral_claim_decision}'"
-                           f"2. Source Credibility: A float value between 0 and 1, as defined above"
-                           f"3. Extract key phrases from the evidence that support the decision."
-                           f"4. Provide a brief justification for the credibility score.\n"
-                           f"Additional Step:"
-                           f"- Relevance: Assess whether the evidence is contextually relevant to the claim before "
-                           f"determining the relationship. If irrelevant, the decision should default to '{neutral_claim_decision}'.\n\n"
-                           f"CLAIMS:\n{prompt}"
+                "content": (f"Evaluate the relationship between the given claim and the provided evidence. "
+                            f"For each claim, determine whether the evidence supports, contradicts, or is neutral to the claim.\n"
+                            f"Criteria for Decision:"
+                            f"- {DecisionClaimEnum.supporting}: Evidence explicitly affirms the claim with no ambiguity."
+                            f"- {DecisionClaimEnum.contradicting}: Evidence explicitly denies or disputes the claim with no ambiguity."
+                            f"- {DecisionClaimEnum.neutral}: Evidence is unrelated, ambiguous, or insufficient to affirm or deny the claim.\n"
+                            f"Additionally, assess the credibility of the source using the following scale:"
+                            f"- 1.0: Peer-reviewed resources (e.g., white papers, academic journals)"
+                            f"- 0.8: Crowd-sourced resources with robust moderation (e.g., Wikipedia)"
+                            f"- 0.6: Reputable news outlets and well-known publications"
+                            f"- Below 0.6: Sources with questionable credibility or lack of verification\n"
+                            f"The result should include:"
+                            f"1. Decision: '{DecisionClaimEnum.supporting}', '{DecisionClaimEnum.contradicting}', or '{DecisionClaimEnum.neutral}'"
+                            f"2. Source Credibility: A float value between 0 and 1, as defined above"
+                            f"3. Extract key phrases from the evidence that support the decision."
+                            f"4. Provide a brief justification for the credibility score.\n"
+                            f"Additional Step:"
+                            f"- Relevance: Assess whether the evidence is contextually relevant to the claim before "
+                            f"determining the relationship. If irrelevant, the decision should default to '{DecisionClaimEnum.neutral}'.\n\n"
+                            f"CLAIMS:\n{prompt}")
             }
         ],
         model=model,
-        max_tokens=100,
         response_format=ClassifiedClaims
     )
 
@@ -153,8 +167,8 @@ def classify_evidence(claim, evidence):
 
     logging.debug(f"Classified evidence: {claims}")
     return sorted([{
-        "source": claim_evidence.source,
-        "snippet": claim_evidence.snippet,
+        "source": claim_evidence['source'],
+        "snippet": claim_evidence['snippet'],
         "classification": claim_classification.decision,
         "credibility": claim_classification.source_credibility,
         "evidence": claim_classification.key_evidence,
@@ -168,9 +182,9 @@ def classify_evidence(claim, evidence):
 def aggregate_results(classifications):
     """Aggregate classifications to determine chunk-level validity."""
     logging.debug("Aggregating classification results")
-    supporting = sum(1 for c in classifications if c["classification"] == supporting_claim_decision)
-    contradicting = sum(1 for c in classifications if c["classification"] == contradicting_claim_decision)
-    neutral = sum(1 for c in classifications if c["classification"] == neutral_claim_decision)
+    supporting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
+    contradicting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
+    neutral = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.neutral)
     aggregate = {
         "supporting": supporting,
         "contradicting": contradicting,
@@ -193,17 +207,18 @@ def generate_revision(paragraph, claims_results):
     claims_to_improve = ""
 
     for claim in flagged_claims:
-        supporting_snippets = "\n".join([f"- Credibility: {c['credibility']} - {c['snippet']}" for c in flagged_claims if
-                               c["classification"] == supporting_claim_decision])
-        contradicting_snippets = "\n".join([f"- Credibility: {c['credibility']} {c['snippet']}" for c in flagged_claims if
-                                  c["classification"] == contradicting_claim_decision])
+        supporting_snippets = "\n".join(
+            [f"- Credibility: {c['credibility']} - {c['snippet']}" for c in claim['classifications'] if
+             c["classification"] == DecisionClaimEnum.supporting])
+        contradicting_snippets = "\n".join(
+            [f"- Credibility: {c['credibility']} {c['snippet']}" for c in claim['classifications'] if
+             c["classification"] == DecisionClaimEnum.contradicting])
         if not contradicting_snippets:
             continue
 
-
-        claims_to_improve += f"Claim: {claim['claim']}\n"
-        f"Supporting Evidence:\n{supporting_snippets}\n"
-        f"Contradicting Evidence:\n{contradicting_snippets}\n\n"
+        claims_to_improve += (f"Claim: {claim['claim']}\n"
+                              f"Supporting Evidence:\n{supporting_snippets}\n"
+                              f"Contradicting Evidence:\n{contradicting_snippets}\n\n")
 
     if claims_to_improve == "":
         return None, None
@@ -223,7 +238,7 @@ def generate_revision(paragraph, claims_results):
         f"4. If a contradiction cannot be resolved due to insufficient information, state explicitly that the claim requires clarification or additional evidence."
         f"5. Provide a short explanation for each revision, describing how the change ensures factual accuracy."
     )
-    response = client.chat.completions.create(
+    response = client.beta.chat.completions.parse(
         messages=[
             {
                 "role": "system",
@@ -235,15 +250,18 @@ def generate_revision(paragraph, claims_results):
             }
         ],
         model=model,
-        max_tokens=500
+        response_format=RevisedParagraph
     )
-    revised_paragraph = response.choices[0].message.content.strip()
-    logging.debug(f"Generated revised paragraph: {revised_paragraph}")
+    revised_paragraph = response.choices[0].message.parsed
+    if not revised_paragraph:
+        logging.debug("Did not revise paragraph")
+        return None, None
 
+    logging.debug(f"Generated revised paragraph: {revised_paragraph}")
     # Compute differences
     dmp = diff_match_patch()
-    diffs = dmp.diff_main(paragraph, revised_paragraph)
-    dmp.diff_cleanupSemantic(diffs)
+    diffs = dmp.diff_main(paragraph, revised_paragraph.revised_paragraph)
+    # dmp.diff_cleanupSemantic(diffs)
     diff_html = dmp.diff_prettyHtml(diffs)
 
     return revised_paragraph, diff_html
@@ -273,12 +291,15 @@ def verify_text(input_text):
             })
 
         flagged = any(c["aggregate"]["flagged"] for c in claims_results)
-        revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else None
+        revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else (None, None)
+        if (revised_paragraph is None) or (paragraph_diff is None):
+            continue
 
         results.append({
             "paragraph": paragraph,
             "claims_results": claims_results,
-            "revised_paragraph": revised_paragraph,
+            "revised_paragraph": revised_paragraph.revised_paragraph,
+            "change_explanation": revised_paragraph.explanation,
             "paragraph_diff": paragraph_diff
         })
 
@@ -316,6 +337,7 @@ def verify():
 
         paragraphs.append({
             "paragraph": result['paragraph'],
+            "change_explanation": result['change_explanation'],
             "paragraph_diff": result['paragraph_diff'],
             "revised_paragraph": result['revised_paragraph'],
             "highlights": highlights
