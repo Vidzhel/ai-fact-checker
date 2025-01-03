@@ -88,15 +88,39 @@ def chunk_text(input_text):
     return input_text.split("\n\n")  # Simple split by double newline for paragraphs
 
 
-async def extract_claims_from_paragraph(claims: list[Claim], paragraph):
-    formatted_claims = "\n".join([f"- {claim.claim_text}" for claim in claims])
-    additional_claims = await extract_claims(
-        paragraph,
-        additional_prompt=f"\n\n Additional guidelines: "
-                          f"1. Analyse the already extracted claims and generate more if you see any factual information is missing"
-                          f"Do not repeat claims, but create new"
-                          f"ALREADY EXTRACTED CLAIMS: {formatted_claims}")
-    return claims + additional_claims
+async def refine_claims(claims: list[Claim], paragraph):
+    formatted_claims = "\n".join([f"- CLAIM: '''{claim.claim_text}'''; ORIGINAL_TEXT: '''{claim.original_text}'''" for claim in claims])
+    prompt = (
+        f"Your task is to analyze the given claims, improve them for clarity and context, and generate additional claims if any factual information appears to be missing.\n"
+        f"Guidelines:"
+        f"1. Analyze Existing Claims: Review the already extracted claims and evaluate their clarity, context, and completeness."
+        f"- If a claim lacks sufficient context or requires clarification, refine it to make it more precise and understandable."
+        f"- Ensure each claim is self-contained and represent text"
+        f"2. Generate New Claims (if needed): If there is factual information in the input that is not captured by the existing claims, extract and generate additional claims."
+        f"- New claims should be distinct, concise, and cover missing factual information."
+        f"3. Output Format: Provide a list of improved and newly generated claims in the following format\n\n"
+        f"ALREADY EXTRACTED CLAIMS: {formatted_claims}\n\n"
+        f"Extracted from text:'''${paragraph}'''")
+    response = await client.beta.chat.completions.parse(
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model=model,
+        response_format=Claims
+    )
+    refined_claims = response.choices[0].message.parsed
+    if not refined_claims:
+        logging.info("Claims were not refined")
+        return claims
+
+    return refined_claims.list
 
 
 async def extract_claims(text, additional_prompt=""):
@@ -108,9 +132,8 @@ async def extract_claims(text, additional_prompt=""):
         f"Guidelines:"
         f"1. The 'claim_text' should distill the factual assertion while preserving its meaning. Remove unrelated phrases or context."
         f"2. The 'original_text' must exactly match the corresponding part of the input text from which the claim was derived."
-        f"3. Each claim must contain only 1 factual information and enough context to be unambiguous and easy to search"
-        f"4. The claim must question single fact, not multiple facts, so that it's easy to search"
-        f"5. The claim must not be vague, we will be able to find specific information, specific dates, etc."
+        f"3. Each claim must contain only 1 factual information and enough context to be unambiguous and easy to search, with context information, specific dates, names, and people etc."
+        f"4. The claim must question single fact, not multiple facts, so that it's easy to search but have enough context to be unambiguous."
         f"6. Select a particular part of the original text when referencing it, not the entire sentence"
         f"7. Do not include opinions, speculative statements, or rhetorical questions as claims."
         f"8. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
@@ -138,7 +161,7 @@ async def extract_claims(text, additional_prompt=""):
     return claims.list
 
 
-async def retrieve_claim_queries(claims: list[Claim]):
+async def retrieve_claim_queries(claims: list[Claim], context):
     default_queries = ClaimQueries(
         list=[ClaimQuery(google=claim.claim_text, vector_store=claim.claim_text, wiki=claim.claim_text)
               for claim in claims])
@@ -148,6 +171,7 @@ async def retrieve_claim_queries(claims: list[Claim]):
     stringified_claims = "\n".join([f"{claim.claim_text}" for claim in claims])
     prompt = (
         f"Your task is to generate three distinct search queries to search for evidence for EACH of the given claims. "
+        f"You will be provided with context text that may be used to ask more specific questions"
         f"These queries should be optimized for:"
         f"1. Wikipedia (using a Python package like `wikipedia-api` or similar)."
         f"2. Google Search."
@@ -155,7 +179,9 @@ async def retrieve_claim_queries(claims: list[Claim]):
         f"Guidelines:"
         f"1. **Wikipedia Query**: Create a concise query using the most relevant keywords from the claim, structured to match typical Wikipedia titles or content."
         f"2. **Google Query**: Formulate a detailed and natural-language query designed to retrieve the most relevant search results from a general search engine."
-        f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.\n\nCLAIMS: {stringified_claims}")
+        f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.\n\n"
+        f"CONTEXT: {context}\n\n"
+        f"CLAIMS: {stringified_claims}")
     response = await client.beta.chat.completions.parse(
         messages=[
             {
@@ -182,14 +208,16 @@ async def retrieve_evidence(claimQuery: ClaimQuery):
     results = []
     logging.info(f"Retrieving evidence for claim: {claimQuery}")
 
+    existing_files = set(vector_store.store.keys())
     try:
-        docs = await vector_store.asimilarity_search(claimQuery.vector_store, k=3)
-        results.extend(
+        if len(existing_files) != 0:
+            docs = await vector_store.asimilarity_search(claimQuery.vector_store, k=3)
+            results.extend(
             [{'snippet': result.page_content, 'short_snippet': result.page_content,
-              'credibility_justification': 'User provided document', 'credibility': 1,
-              'source': f"{result.metadata['source']} - page: {result.metadata['page']}"} for result
-             in
-             docs])
+            'credibility_justification': 'User provided document', 'credibility': 1,
+            'source': f"{result.metadata['source']} - page: {result.metadata['page']}"} for result
+            in
+            docs])
     except Exception as e:
         logging.error(f"Error retrieving vector_store results: {e}")
 
@@ -414,8 +442,8 @@ async def process_paragraph(paragraph: str):
         *[extract_claims(sentence) for sentence in paragraph.split(".")]
     )
     sentence_claims = [claim for claims in sentence_claims for claim in claims]
-    claims = await extract_claims_from_paragraph(sentence_claims, paragraph)
-    claim_queries = await retrieve_claim_queries(claims)
+    claims = await refine_claims(sentence_claims, paragraph)
+    claim_queries = await retrieve_claim_queries(claims, paragraph)
     claims_results = await asyncio.gather(
         *[process_claim(claim_obj, claim_query) for claim_obj, claim_query in zip(claims, claim_queries.list)]
     )
