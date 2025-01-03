@@ -11,6 +11,7 @@ from diff_match_patch import diff_match_patch
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
+import asyncio
 
 EMBEDDINGS_FOLDER = './embeddings'
 VECTOR_STORE_PATH = os.path.join(EMBEDDINGS_FOLDER, 'vector_store.json')
@@ -21,7 +22,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-client = openai.OpenAI(
+client = openai.AsyncOpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
 model = "gpt-4o-mini"
@@ -87,7 +88,7 @@ def chunk_text(input_text):
     return input_text.split("\n\n")  # Simple split by double newline for paragraphs
 
 
-def extract_claims(paragraph):
+async def extract_claims(paragraph):
     """Extracts factual claims from a paragraph using LLM."""
     logging.info(f"Extracting claims from paragraph: {paragraph}")
     prompt = (
@@ -100,7 +101,7 @@ def extract_claims(paragraph):
         f"4. If there is ambiguity in the claim, provide the most concise and accurate interpretation."
         f"5. If there is no claims, output empty list"
         f"6. Ensure claims are extracted accurately, even if they are embedded in longer sentences.\n\n'''${paragraph}'''")
-    response = client.beta.chat.completions.parse(
+    response = await client.beta.chat.completions.parse(
         messages=[
             {
                 "role": "system",
@@ -123,7 +124,7 @@ def extract_claims(paragraph):
     return claims.list
 
 
-def retrieve_claim_queries(claims: list[Claim]):
+async def retrieve_claim_queries(claims: list[Claim]):
     default_queries = ClaimQueries(
         list=[ClaimQuery(google=claim.claim_text, vector_store=claim.claim_text, wiki=claim.claim_text)
               for claim in claims])
@@ -141,7 +142,7 @@ def retrieve_claim_queries(claims: list[Claim]):
         f"1. **Wikipedia Query**: Create a concise query using the most relevant keywords from the claim, structured to match typical Wikipedia titles or content."
         f"2. **Google Query**: Formulate a detailed and natural-language query designed to retrieve the most relevant search results from a general search engine."
         f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.\n\nCLAIMS: {stringified_claims}")
-    response = client.beta.chat.completions.parse(
+    response = await client.beta.chat.completions.parse(
         messages=[
             {
                 "role": "system",
@@ -162,13 +163,13 @@ def retrieve_claim_queries(claims: list[Claim]):
     return default_queries
 
 
-def retrieve_evidence(claimQuery: ClaimQuery):
+async def retrieve_evidence(claimQuery: ClaimQuery):
     """Retrieve evidence for a claim from multiple sources."""
     results = []
     logging.info(f"Retrieving evidence for claim: {claimQuery}")
 
     try:
-        docs = vector_store.similarity_search(claimQuery.vector_store, k=3)
+        docs = await vector_store.asimilarity_search(claimQuery.vector_store, k=3)
         results.extend(
             [{'snippet': result.page_content, 'short_snippet': result.page_content,
               'credibility_justification': 'User provided document', 'credibility': 1,
@@ -179,7 +180,7 @@ def retrieve_evidence(claimQuery: ClaimQuery):
         logging.error(f"Error retrieving vector_store results: {e}")
 
     try:
-        wiki_results = WikipediaLoader(query=claimQuery.wiki, load_max_docs=3).load()
+        wiki_results = await WikipediaLoader(query=claimQuery.wiki, load_max_docs=3).aload()
         results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'],
                          'source': result.metadata['source']} for result in wiki_results])
     except Exception as e:
@@ -198,14 +199,14 @@ def retrieve_evidence(claimQuery: ClaimQuery):
     return results
 
 
-def classify_evidence(claim, evidence):
+async def classify_evidence(claim, evidence):
     """Classify evidence snippets as Supporting, Contradicting, or Neutral."""
     logging.info(f"Classifying evidence for claim: {claim}")
     prompt = f"Claim: '''{claim}'''"
     for item in evidence:
         prompt += f"\n\nEvidence: '''{item['snippet']}'''\nSource: '''{item['source']}'''"
 
-    response = client.beta.chat.completions.parse(
+    response = await client.beta.chat.completions.parse(
         messages=[
             {
                 "role": "system",
@@ -302,7 +303,7 @@ def aggregate_results(classifications):
     return aggregate
 
 
-def generate_revision(paragraph, claims_results):
+async def generate_revision(paragraph, claims_results):
     """Propose a revised paragraph if necessary."""
     logging.info(f"Generating revision for paragraph: {paragraph}")
 
@@ -345,7 +346,7 @@ def generate_revision(paragraph, claims_results):
         f"4. If a contradiction cannot be resolved due to insufficient information, state explicitly that the claim requires clarification or additional evidence."
         f"5. Provide a short explanation for each revision, describing how the change ensures factual accuracy."
     )
-    response = client.beta.chat.completions.parse(
+    response = await client.beta.chat.completions.parse(
         messages=[
             {
                 "role": "system",
@@ -372,49 +373,56 @@ def generate_revision(paragraph, claims_results):
     return revised_paragraph, diff_html
 
 
-def verify_text(input_text):
+async def verify_text(input_text):
     """Main workflow to verify and revise input text."""
     logging.info("Starting text verification")
     paragraphs = chunk_text(input_text)
-    results = []
-
-    for i, paragraph in enumerate(paragraphs):
-        claims = extract_claims(paragraph)
-        claim_queries = retrieve_claim_queries(claims)
-        claims_results = []
-        for (claim_obj, claim_query) in zip(claims, claim_queries.list):
-            claim = claim_obj.claim_text
-            original_text = claim_obj.original_text
-            evidence = retrieve_evidence(claim_query)
-            classified_evidence = classify_evidence(claim, evidence)
-            claim_aggregate = aggregate_results(classified_evidence)
-            claims_results.append({
-                "claim": claim,
-                "original_text": original_text,
-                "classifications": classified_evidence,
-                "aggregate": claim_aggregate
-            })
-
-        flagged = any(c["aggregate"]["flagged"] for c in claims_results)
-        revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else (None, None)
-        if (revised_paragraph is None) or (paragraph_diff is None):
-            results.append({
-                "paragraph": paragraph,
-                "flagged": flagged,
-                "claims_results": claims_results,
-            })
-        else:
-            results.append({
-                "paragraph": paragraph,
-                "flagged": flagged,
-                "claims_results": claims_results,
-                "revised_paragraph": revised_paragraph.revised_paragraph,
-                "change_explanation": revised_paragraph.explanation,
-                "paragraph_diff": paragraph_diff
-            })
+    results = await asyncio.gather(
+        *[process_paragraph(paragraph) for paragraph in paragraphs]
+    )
 
     logging.info("Completed text verification")
     return results
+
+
+async def process_paragraph(paragraph):
+    claims = await extract_claims(paragraph)
+    claim_queries = await retrieve_claim_queries(claims)
+    claims_results = await asyncio.gather(
+        *[process_claim(claim_obj, claim_query) for claim_obj, claim_query in zip(claims, claim_queries.list)]
+    )
+
+    flagged = any(c["aggregate"]["flagged"] for c in claims_results)
+    revised_paragraph, paragraph_diff = generate_revision(paragraph, claims_results) if flagged else (None, None)
+    if (revised_paragraph is None) or (paragraph_diff is None):
+        return {
+            "paragraph": paragraph,
+            "flagged": flagged,
+            "claims_results": claims_results,
+        }
+    else:
+        return {
+            "paragraph": paragraph,
+            "flagged": flagged,
+            "claims_results": claims_results,
+            "revised_paragraph": revised_paragraph.revised_paragraph,
+            "change_explanation": revised_paragraph.explanation,
+            "paragraph_diff": paragraph_diff
+        }
+
+
+async def process_claim(claim_obj, claim_query):
+    claim = claim_obj.claim_text
+    original_text = claim_obj.original_text
+    evidence = await retrieve_evidence(claim_query)
+    classified_evidence = await classify_evidence(claim, evidence)
+    claim_aggregate = aggregate_results(classified_evidence)
+    return {
+        "claim": claim,
+        "original_text": original_text,
+        "classifications": classified_evidence,
+        "aggregate": claim_aggregate
+    }
 
 
 @app.route('/')
@@ -423,14 +431,14 @@ def index():
 
 
 @app.route('/verify', methods=['POST'])
-def verify():
+async def verify():
     input_text = request.json.get('text')
     if not input_text:
         logging.error("No input text provided")
         return jsonify({"error": "No input text provided."}), 400
 
     logging.info("Received text for verification")
-    verification_results = verify_text(input_text)
+    verification_results = await verify_text(input_text)
 
     text = input_text
     paragraphs = []
