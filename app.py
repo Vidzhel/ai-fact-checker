@@ -1,7 +1,6 @@
 import openai
 from langchain_community.document_loaders import WikipediaLoader
 from langchain_google_community import GoogleSearchAPIWrapper
-import json
 import os
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
@@ -12,7 +11,6 @@ from diff_match_patch import diff_match_patch
 
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 client = openai.OpenAI(
@@ -267,16 +265,13 @@ def generate_revision(paragraph, claims_results):
         return None, None
 
     logging.info(f"Generated revised paragraph: {revised_paragraph}")
-    # Compute differences
     dmp = diff_match_patch()
     diffs = dmp.diff_main(paragraph, revised_paragraph.revised_paragraph)
-    # dmp.diff_cleanupSemantic(diffs)
     diff_html = dmp.diff_prettyHtml(diffs)
 
     return revised_paragraph, diff_html
 
 
-# Main function
 def verify_text(input_text):
     """Main workflow to verify and revise input text."""
     logging.info("Starting text verification")
@@ -374,7 +369,4 @@ def verify():
 
 # Example Usage
 if __name__ == "__main__":
-    # input_text = """In 2020, the global market cap was $50 trillion. The population of the Earth is 8 billion people. Einstein was born in 1905."""
-    # output = verify_text(input_text)
-    # print(json.dumps(output, indent=4))
     app.run(debug=True, port=9000)
