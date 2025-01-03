@@ -12,6 +12,8 @@ from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 
 EMBEDDINGS_FOLDER = './embeddings'
 VECTOR_STORE_PATH = os.path.join(EMBEDDINGS_FOLDER, 'vector_store.json')
@@ -89,7 +91,8 @@ def chunk_text(input_text):
 
 
 async def refine_claims(claims: list[Claim], paragraph):
-    formatted_claims = "\n".join([f"- CLAIM: '''{claim.claim_text}'''; ORIGINAL_TEXT: '''{claim.original_text}'''" for claim in claims])
+    formatted_claims = "\n".join(
+        [f"- CLAIM: '''{claim.claim_text}'''; ORIGINAL_TEXT: '''{claim.original_text}'''" for claim in claims])
     prompt = (
         f"Your task is to analyze the given claims, improve them for clarity and context, and generate additional claims if any factual information appears to be missing.\n"
         f"Guidelines:"
@@ -213,11 +216,11 @@ async def retrieve_evidence(claimQuery: ClaimQuery):
         if len(existing_files) != 0:
             docs = await vector_store.asimilarity_search(claimQuery.vector_store, k=3)
             results.extend(
-            [{'snippet': result.page_content, 'short_snippet': result.page_content,
-            'credibility_justification': 'User provided document', 'credibility': 1,
-            'source': f"{result.metadata['source']} - page: {result.metadata['page']}"} for result
-            in
-            docs])
+                [{'snippet': result.page_content, 'short_snippet': result.page_content,
+                  'credibility_justification': 'User provided document', 'credibility': 1,
+                  'source': f"{result.metadata['source']} - page: {result.metadata['page']}"} for result
+                 in
+                 docs])
     except Exception as e:
         logging.error(f"Error retrieving vector_store results: {e}")
 
@@ -233,12 +236,25 @@ async def retrieve_evidence(claimQuery: ClaimQuery):
             google_results = GoogleSearchAPIWrapper(k=3).results(query=claimQuery.google, num_results=5)
             logging.info(f"Retrieved Google results: {google_results}")
             results.extend(
-                [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']}
-                 for result in google_results])
+                [{'snippet': result["snippet"], 'short_snippet': result["snippet"],
+                  'source': result['link']} for result in google_results])
         except Exception as e:
             logging.error(f"Error retrieving google results: {e}")
 
     return results
+
+
+async def download_page_content(url):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                content = await response.text()
+                soup = BeautifulSoup(content, 'html.parser')
+                return soup.get_text()
+    except aiohttp.ClientError as e:
+        logging.error(f"Error fetching the URL: {e}")
+        return None
 
 
 async def classify_evidence(claim, evidence):
