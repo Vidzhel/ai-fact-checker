@@ -8,6 +8,12 @@ import logging
 from pydantic import BaseModel
 from enum import Enum
 from diff_match_patch import diff_match_patch
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+
+EMBEDDINGS_FOLDER = './embeddings'
+VECTOR_STORE_PATH = os.path.join(EMBEDDINGS_FOLDER, 'vector_store.json')
 
 load_dotenv()
 
@@ -23,6 +29,8 @@ system_prompt = (f"You are a highly objective scientist and researcher with expe
                  f"Your analysis should avoid assumptions, focusing only on the evidence provided and its credibility. "
                  f"Respond concisely and clearly in the specified output format, ensuring objectivity and "
                  f"adherence to the criteria.")
+
+vector_store: InMemoryVectorStore | None = None
 
 app = Flask(__name__)
 
@@ -40,6 +48,12 @@ class DecisionClaimEnum(str, Enum):
     supporting = 'Supporting'
     contradicting = 'Contradicting'
     neutral = 'Neutral'
+
+
+class Queries(BaseModel):
+    google: str
+    wiki: str
+    vector_store: str
 
 
 class ClassifiedClaim(BaseModel):
@@ -105,16 +119,54 @@ def retrieve_evidence(claim):
     """Retrieve evidence for a claim from multiple sources."""
     results = []
     logging.info(f"Retrieving evidence for claim: {claim}")
+    query_wiki, query_google, query_vector_store = claim
+
+    prompt = (
+        f"Your task is to generate three distinct search queries based on the given claim. These queries should be optimized for:"
+        f"1. Wikipedia (using a Python package like `wikipedia-api` or similar)."
+        f"2. Google Search."
+        f"3. A vector store for semantic search.\n\n"
+        f"Guidelines:"
+        f"1. **Wikipedia Query**: Create a concise query using the most relevant keywords from the claim, structured to match typical Wikipedia titles or content."
+        f"2. **Google Query**: Formulate a detailed and natural-language query designed to retrieve the most relevant search results from a general search engine."
+        f"3. **Vector Store Query**: Generate a semantic representation of the claim, preserving its full meaning, for use in vector-based retrieval systems.")
+    response = client.beta.chat.completions.parse(
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model=model,
+        response_format=Queries
+    )
+    queries = response.choices[0].message.parsed
+    if queries:
+        query_wiki = queries.wiki
+        query_google = queries.google
+        query_vector_store = queries
 
     try:
-        wiki_results = WikipediaLoader(query=claim, load_max_docs=3).load()
+        docs = vector_store.similarity_search(query_vector_store, k=3)
+        results.extend(
+            [{'snippet': result.page_content, 'source': result.metadata['source'], 'credibility': 1} for result in
+             docs])
+    except Exception as e:
+        logging.error(f"Error retrieving wiki results: {e}")
+
+    try:
+        wiki_results = WikipediaLoader(query=query_wiki, load_max_docs=3).load()
         results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'],
                          'source': result.metadata['source']} for result in wiki_results])
     except Exception as e:
         logging.error(f"Error retrieving wiki results: {e}")
 
     try:
-        google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
+        google_results = GoogleSearchAPIWrapper(k=3).results(query=query_google, num_results=5)
         logging.info(f"Retrieved Google results: {google_results}")
         results.extend(
             [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in
@@ -177,7 +229,7 @@ def classify_evidence(claim, evidence):
         "snippet": claim_evidence['snippet'],
         "short_snippet": claim_evidence['short_snippet'],
         "classification": claim_classification.decision,
-        "credibility": claim_classification.source_credibility,
+        "credibility": claim_evidence.get('credibility', claim_classification.source_credibility),
         "evidence": claim_classification.key_evidence,
         "credibility_justification": claim_classification.credibility_justification
     } for (claim_evidence, claim_classification) in zip(evidence, claims.list)
@@ -367,6 +419,39 @@ def verify():
     })
 
 
-# Example Usage
-if __name__ == "__main__":
-    app.run(debug=True, port=9000)
+def save_vector_store(vector_store, path=VECTOR_STORE_PATH):
+    """Save the vector store to a JSON file."""
+    vector_store.dump(path)
+
+
+def load_vector_store(path=VECTOR_STORE_PATH):
+    """Load the vector store from a JSON file."""
+    if os.path.exists(path):
+        return InMemoryVectorStore.load(path, embedding=OpenAIEmbeddings(model="text-embedding-3-small"))
+    return InMemoryVectorStore(embedding=OpenAIEmbeddings(model="text-embedding-3-small"))
+
+
+def embed_pdfs_from_folder(folder_path=EMBEDDINGS_FOLDER):
+    """Embed PDFs from a folder and update the vector store."""
+    pdf_files = {f for f in os.listdir(folder_path) if f.endswith('.pdf')}
+    existing_files = set(vector_store.store.keys())
+
+    # Add new files
+    new_files = pdf_files - existing_files
+    for pdf_file in new_files:
+        file_path = os.path.join(folder_path, pdf_file)
+        loader = PyPDFLoader(file_path)
+        documents = loader.load_and_split()
+        for document in documents:
+            vector_store.add_documents(documents=[document], ids=[pdf_file])
+
+    # Remove deleted files
+    removed_files = existing_files - pdf_files
+    vector_store.delete(ids=list(removed_files))
+
+    # Save the updated vector store
+    save_vector_store(vector_store)
+
+
+vector_store = load_vector_store()
+embed_pdfs_from_folder()
