@@ -269,20 +269,34 @@ def aggregate_results(classifications):
     contradicting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
     neutral = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.neutral)
 
-    supporting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
-    contradicting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
-    certainly_incorrect = 0
-    if supporting_credibility + contradicting_credibility != 0:
-        certainly_incorrect = contradicting_credibility / (supporting_credibility + contradicting_credibility)
+    supporting_credibility = sum(
+        c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
+    contradicting_credibility = sum(
+        c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
+    flagged = False
+    # Certain correct - we have only supporting evidence. No changes done. If the certainty is low, we do not have
+    # contradicting evidence to update
+    certainty = 0
+    if contradicting_credibility == 0 and supporting_credibility != 0:
+        certainty = supporting_credibility / supporting
+    # Calculate how certain it's incorrect. We have both supporting and contradicting evidence,
+    # so in case contradicting certainty is high, we flag the text for update
+    if supporting_credibility != 0 and contradicting_credibility != 0:
+        certainty = contradicting_credibility / (supporting_credibility + contradicting_credibility)
+        flagged = certainty >= 0.6
 
-    flagged = certainly_incorrect >= 0.6
-    certainty = 1 - certainly_incorrect if flagged else certainly_incorrect
+    # Certain incorrect - we have only contradicting evidence, so we do change if we are confident enough
+    # Maybe it's more logical
+    if contradicting_credibility != 0 and supporting_credibility == 0:
+        certainty = contradicting_credibility / contradicting
+        flagged = certainty >= 0.6
+
     aggregate = {
         "supporting": supporting,
         "contradicting": contradicting,
         "neutral": neutral,
         "flagged": flagged,
-        "certainty": certainty
+        "certainty": round(certainty, 2)
     }
     logging.info(f"Aggregated results: {aggregate}")
     return aggregate

@@ -91,15 +91,15 @@
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
                 const certainty = highlight.aggregate.certainty;
-                certaintyComment = certainty < 0.5 ? 'Unsure' : certainty < 0.7 ? 'Likely' : 'Very likely';
+                certaintyComment = certainty < 0.5 ? 'Based on gathered data - unsure if correct or not' : certainty < 0.7 ? 'Based on gathered data - decision seems correct (whether claim was altered or not)' : 'Based on gathered data - decision seems to be very likely correct (whether claim was altered or not)';
                 let certaintyDetails = `<strong>Certainty:</strong> ${certainty} - ${certaintyComment};<br>`;
                 certaintyDetails += `<strong>Supporting:</strong> ${highlight.aggregate.supporting} - <strong>Contradicting:</strong> ${highlight.aggregate.contradicting} - <strong>Neutral:</strong> ${highlight.aggregate.neutral}`
 
                 let tooltipContent = paragraph.flagged ? `
                     <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
                     <strong>Explanation:</strong> ${paragraph.change_explanation}<br><br>
-                    ${certaintyDetails}}<br><br>
-                ` : `${certaintyDetails}}<br><br>`;
+                    ${certaintyDetails}<br><br>
+                ` : `${certaintyDetails}<br><br>`;
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
                     <strong>Cridability:</strong> ${c.credibility} - ${c.credibility_justification}<br>
