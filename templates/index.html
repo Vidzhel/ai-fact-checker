@@ -90,10 +90,14 @@
 
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
+                const certainty = highlight.aggregate.certainty;
+                const certaintyDetails = `<strong>Certainty:</strong> ${certainty};\n <strong>Supporting:</strong> ${highlight.aggregate.supporting} - <strong>Contradicting:</strong> ${highlight.aggregate} - <strong>Neutral:</strong> ${certainty.neutral}`;
+
                 let tooltipContent = paragraph.flagged ? `
                     <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
                     <strong>Explanation:</strong> ${paragraph.change_explanation}<br><br>
-                ` : '';
+                    ${certaintyDetails}}<br><br>
+                ` : `${certaintyDetails}}<br><br>`;
                 tooltipContent += highlight.classifications.map(c => `
                     <strong>Source:</strong> ${c.source}<br>
                     <strong>Cridability:</strong> ${c.credibility} - ${c.credibility_justification}<br>

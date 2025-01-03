@@ -14,6 +14,7 @@ from langchain_community.document_loaders import PyPDFLoader
 
 EMBEDDINGS_FOLDER = './embeddings'
 VECTOR_STORE_PATH = os.path.join(EMBEDDINGS_FOLDER, 'vector_store.json')
+ENABLE_QUERY_OPTIMIZATION = os.environ.get('ENABLE_QUERY_OPTIMIZATION') == 'true'
 
 load_dotenv()
 
@@ -121,6 +122,10 @@ def extract_claims(paragraph):
 
 
 def retrieve_claim_queries(claims: list[Claim]):
+    default_queries = ClaimQueries(list=[ClaimQuery(google=claim, vector_store=claim, wiki=claim) for claim in claims])
+    if not ENABLE_QUERY_OPTIMIZATION:
+        return default_queries
+
     stringified_claims = "\n".join([f"{claim.claim_text}" for claim in claims])
     prompt = (
         f"Your task is to generate three distinct search queries to search for evidence for EACH of the given claims. "
@@ -147,10 +152,10 @@ def retrieve_claim_queries(claims: list[Claim]):
         response_format=ClaimQueries
     )
     queries = response.choices[0].message.parsed
-    if not queries:
-        return ClaimQueries(list=[ClaimQuery(google=claim, vector_store=claim, wiki=claim) for claim in claims])
+    if queries:
+        return queries
 
-    return queries
+    return default_queries
 
 
 def retrieve_evidence(claimQuery: ClaimQuery):
@@ -262,7 +267,8 @@ def aggregate_results(classifications):
         "supporting": supporting,
         "contradicting": contradicting,
         "neutral": neutral,
-        "flagged": contradicting > supporting
+        "flagged": contradicting > supporting,
+        "certainty":  supporting / (supporting + contradicting) if len(classifications) != 0 else 0
     }
     logging.info(f"Aggregated results: {aggregate}")
     return aggregate
@@ -404,12 +410,12 @@ def verify():
     for result in verification_results:
         highlights = []
         for claim_result in result['claims_results']:
-            if claim_result['aggregate']['flagged']:
-                highlights.append({
-                    "claim": claim_result['claim'],
-                    "original_text": claim_result['original_text'],
-                    "classifications": claim_result['classifications']
-                })
+            highlights.append({
+                "claim": claim_result['claim'],
+                "original_text": claim_result['original_text'],
+                "classifications": claim_result['classifications'],
+                "aggregate": claim_result['aggregate']
+            })
 
         if result['flagged']:
             paragraphs.append({
