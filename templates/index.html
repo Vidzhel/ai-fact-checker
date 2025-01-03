@@ -42,7 +42,7 @@
             width: 500px;
         }
 
-        .highlight-change:hover .tooltip, .highlight-approved:hover .tooltip{
+        .highlight-change:hover .tooltip, .highlight-approved:hover .tooltip {
             display: block;
         }
 
@@ -91,7 +91,9 @@
             paragraph.highlights.forEach(highlight => {
                 const claim = highlight.original_text;
                 const certainty = highlight.aggregate.certainty;
-                const certaintyDetails = `<strong>Certainty:</strong> ${certainty};\n <strong>Supporting:</strong> ${highlight.aggregate.supporting} - <strong>Contradicting:</strong> ${highlight.aggregate} - <strong>Neutral:</strong> ${certainty.neutral}`;
+                certaintyComment = certainty < 0.5 ? 'Unsure' : certainty < 0.7 ? 'Likely' : 'Very likely';
+                let certaintyDetails = `<strong>Certainty:</strong> ${certainty} - ${certaintyComment};<br>`;
+                certaintyDetails += `<strong>Supporting:</strong> ${highlight.aggregate.supporting} - <strong>Contradicting:</strong> ${highlight.aggregate.contradicting} - <strong>Neutral:</strong> ${highlight.aggregate.neutral}`
 
                 let tooltipContent = paragraph.flagged ? `
                     <strong>Updated paragraph:</strong> ${paragraph.paragraph_diff}<br><br>
@@ -106,7 +108,7 @@
                     <strong>Classification:</strong> ${c.classification}
                 `).join('<br><br>');
 
-                bgColor = certainty < 0.5 ? 'lightcoral' : `rgb(${Math.round(255 - 255 * (certainty - 0.5) * 2)}, ${Math.round(255 * (certainty - 0.5) * 2)}, 0)`;
+                const bgColor = certainty < 0.5 ? 'lightcoral' : `rgb(${Math.round(255 - 255 * (certainty - 0.5) * 2)}, ${Math.round(255 * (certainty - 0.5) * 2)}, 0)`;
                 const highlightedHTML = `
                     <span class="${paragraph.flagged ? 'highlight-change' : 'highlight-approved'}"
                     style="background-color: ${bgColor}">

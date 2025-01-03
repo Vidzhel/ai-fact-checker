@@ -25,6 +25,7 @@ client = openai.OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
 model = "gpt-4o-mini"
+advanced_model = "gpt-4o"
 system_prompt = (f"You are a highly objective scientist and researcher with expertise in evaluating claims "
                  f"against evidence. Your goal is to assess relationships between claims and provided evidence, "
                  f"relying only on factual information and verifiable sources"
@@ -236,7 +237,7 @@ def classify_evidence(claim, evidence):
                             f"CLAIMS:\n{prompt}")
             }
         ],
-        model=model,
+        model=advanced_model,
         response_format=ClassifiedClaims
     )
 
@@ -270,14 +271,17 @@ def aggregate_results(classifications):
 
     supporting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
     contradicting_credibility = sum(c['credibility'] for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
-    certainty = 0
-    if contradicting_credibility + contradicting_credibility != 0:
-        certainty = supporting_credibility / (contradicting_credibility + contradicting_credibility)
+    certainly_incorrect = 0
+    if supporting_credibility + contradicting_credibility != 0:
+        certainly_incorrect = contradicting_credibility / (supporting_credibility + contradicting_credibility)
+
+    flagged = certainly_incorrect >= 0.6
+    certainty = 1 - certainly_incorrect if flagged else certainly_incorrect
     aggregate = {
         "supporting": supporting,
         "contradicting": contradicting,
         "neutral": neutral,
-        "flagged": contradicting > supporting,
+        "flagged": flagged,
         "certainty": certainty
     }
     logging.info(f"Aggregated results: {aggregate}")
