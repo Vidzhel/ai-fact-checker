@@ -9,12 +9,11 @@ import logging
 from pydantic import BaseModel
 from enum import Enum
 from diff_match_patch import diff_match_patch
-from typing_extensions import Annotated
 
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 client = openai.OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
@@ -64,13 +63,13 @@ class RevisedParagraph(BaseModel):
 # Functions for core steps
 def chunk_text(input_text):
     """Splits text into paragraphs or logical chunks."""
-    logging.debug("Chunking text")
+    logging.info("Chunking text")
     return input_text.split("\n\n")  # Simple split by double newline for paragraphs
 
 
 def extract_claims(paragraph):
     """Extracts factual claims from a paragraph using LLM."""
-    logging.debug(f"Extracting claims from paragraph: {paragraph}")
+    logging.info(f"Extracting claims from paragraph: {paragraph}")
     prompt = (
         f"Extract all factual claims from the given text. A factual claim is any statement that asserts something "
         f"as a fact and can be verified\n"
@@ -97,32 +96,40 @@ def extract_claims(paragraph):
     )
     claims = response.choices[0].message.parsed
     if not claims:
-        logging.debug("No claims extracted")
+        logging.info("No claims extracted")
         return []
 
-    logging.debug(f"Extracted claims: {claims}")
+    logging.info(f"Extracted claims: {claims}")
     return claims.list
 
 
 def retrieve_evidence(claim):
     """Retrieve evidence for a claim from multiple sources."""
     results = []
-    logging.debug(f"Retrieving evidence for claim: {claim}")
-    # Wikipedia retrieval
-    wiki_results = WikipediaLoader(query=claim, load_max_docs=3).load()
-    results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'], 'source': result.metadata['source']} for result in wiki_results])
+    logging.info(f"Retrieving evidence for claim: {claim}")
 
-    # Google Search retrieval
-    # google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
-    # logging.debug(f"Retrieved Google results: {google_results}")
-    # results.extend([{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in google_results])
+    try:
+        wiki_results = WikipediaLoader(query=claim, load_max_docs=3).load()
+        results.extend([{'snippet': result.page_content, 'short_snippet': result.metadata['summary'],
+                         'source': result.metadata['source']} for result in wiki_results])
+    except Exception as e:
+        logging.error(f"Error retrieving wiki results: {e}")
+
+    try:
+        google_results = GoogleSearchAPIWrapper(k=3).results(query=claim, num_results=5)
+        logging.info(f"Retrieved Google results: {google_results}")
+        results.extend(
+            [{'snippet': result["snippet"], 'short_snippet': result["snippet"], 'source': result['link']} for result in
+             google_results])
+    except Exception as e:
+        logging.error(f"Error retrieving google results: {e}")
 
     return results
 
 
 def classify_evidence(claim, evidence):
     """Classify evidence snippets as Supporting, Contradicting, or Neutral."""
-    logging.debug(f"Classifying evidence for claim: {claim}")
+    logging.info(f"Classifying evidence for claim: {claim}")
     prompt = f"Claim: '''{claim}'''"
     for item in evidence:
         prompt += f"\n\nEvidence: '''{item['snippet']}'''\nSource: '''{item['source']}'''"
@@ -163,10 +170,10 @@ def classify_evidence(claim, evidence):
 
     claims = response.choices[0].message.parsed
     if not claims:
-        logging.debug("No claims extracted")
+        logging.info("No claims extracted")
         return []
 
-    logging.debug(f"Classified evidence: {claims}")
+    logging.info(f"Classified evidence: {claims}")
     return sorted([{
         "source": claim_evidence['source'],
         "snippet": claim_evidence['snippet'],
@@ -183,7 +190,7 @@ def classify_evidence(claim, evidence):
 
 def aggregate_results(classifications):
     """Aggregate classifications to determine chunk-level validity."""
-    logging.debug("Aggregating classification results")
+    logging.info("Aggregating classification results")
     supporting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.supporting)
     contradicting = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.contradicting)
     neutral = sum(1 for c in classifications if c["classification"] == DecisionClaimEnum.neutral)
@@ -193,13 +200,13 @@ def aggregate_results(classifications):
         "neutral": neutral,
         "flagged": contradicting > supporting
     }
-    logging.debug(f"Aggregated results: {aggregate}")
+    logging.info(f"Aggregated results: {aggregate}")
     return aggregate
 
 
 def generate_revision(paragraph, claims_results):
     """Propose a revised paragraph if necessary."""
-    logging.debug(f"Generating revision for paragraph: {paragraph}")
+    logging.info(f"Generating revision for paragraph: {paragraph}")
 
     flagged_claims = [c for c in claims_results if c["aggregate"]["flagged"]]
 
@@ -256,10 +263,10 @@ def generate_revision(paragraph, claims_results):
     )
     revised_paragraph = response.choices[0].message.parsed
     if not revised_paragraph:
-        logging.debug("Did not revise paragraph")
+        logging.info("Did not revise paragraph")
         return None, None
 
-    logging.debug(f"Generated revised paragraph: {revised_paragraph}")
+    logging.info(f"Generated revised paragraph: {revised_paragraph}")
     # Compute differences
     dmp = diff_match_patch()
     diffs = dmp.diff_main(paragraph, revised_paragraph.revised_paragraph)
@@ -272,7 +279,7 @@ def generate_revision(paragraph, claims_results):
 # Main function
 def verify_text(input_text):
     """Main workflow to verify and revise input text."""
-    logging.debug("Starting text verification")
+    logging.info("Starting text verification")
     paragraphs = chunk_text(input_text)
     results = []
 
@@ -310,7 +317,7 @@ def verify_text(input_text):
                 "paragraph_diff": paragraph_diff
             })
 
-    logging.debug("Completed text verification")
+    logging.info("Completed text verification")
     return results
 
 
@@ -326,7 +333,7 @@ def verify():
         logging.error("No input text provided")
         return jsonify({"error": "No input text provided."}), 400
 
-    logging.debug("Received text for verification")
+    logging.info("Received text for verification")
     verification_results = verify_text(input_text)
 
     text = input_text
@@ -358,8 +365,7 @@ def verify():
                 "highlights": highlights
             })
 
-
-    logging.debug("Returning verification results")
+    logging.info("Returning verification results")
     return jsonify({
         "text": text,
         "paragraphs": paragraphs
